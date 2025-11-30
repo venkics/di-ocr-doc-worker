@@ -69,14 +69,23 @@ If you only made changes to the worker logic (e.g., `graph.py`), you can use the
 You can find the Base URL in the output of `deploy_to_azure.sh` or in the Azure Portal.
 Format: `https://<ocr-app-name>.azurewebsites.net`
 
-### 1. Process Document Batch
-**Endpoint**: `POST /api/process_batch` (approximate, check `di-ocr/function_app.py` routes)
+### 1. Create Batch
+**Endpoint**: `POST /v1/batches`
+**Body**: `{"patient_id": "optional-id", "sas_ttl_minutes": 30}`
+**Response**: Returns `batch_id` and a SAS URL for uploading files.
 
-**Headers**:
-*   `x-functions-key`: (If function auth is enabled)
+### 2. Upload Files
+Use the `sas_url` from the previous step to upload your documents (PDFs) to Azure Blob Storage using a standard HTTP PUT request.
 
-**Body** (Multipart/Form-Data or JSON depending on implementation):
-*   *Refer to `test_e2e_azure.py` for the exact payload structure.*
+### 3. Finalize Batch (Trigger Processing)
+**Endpoint**: `POST /v1/batches/{batch_id}/finalize`
+**Response**: Confirms that documents have been queued for processing.
+
+### 4. Get Status / Result
+**Endpoint**: `GET /v1/batches/{batch_id}`
+**Response**:
+*   **202 Accepted**: Processing is still in progress. Returns status counts (queued, running, succeeded, failed).
+*   **200 OK**: Processing complete. Returns the final consolidated JSON report.
 
 ---
 
