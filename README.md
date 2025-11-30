@@ -87,6 +87,53 @@ Use the `sas_url` from the previous step to upload your documents (PDFs) to Azur
 *   **202 Accepted**: Processing is still in progress. Returns status counts (queued, running, succeeded, failed).
 *   **200 OK**: Processing complete. Returns the final consolidated JSON report.
 
+### Client Usage Examples
+
+#### Python (`requests`)
+```python
+import requests, time
+
+BASE_URL = "https://<ocr-app-name>.azurewebsites.net"
+FILE_PATH = "my_document.pdf"
+
+# 1. Create Batch
+resp = requests.post(f"{BASE_URL}/v1/batches", json={"sas_ttl_minutes": 60}).json()
+batch_id = resp["batch_id"]
+sas_url = resp["upload"]["sas_url"]
+
+# 2. Upload File (Direct to Blob Storage)
+# Note: Append filename to the SAS URL path
+upload_url = sas_url.replace("?", f"/{batch_id}/{FILE_PATH}?")
+with open(FILE_PATH, "rb") as f:
+    requests.put(upload_url, data=f, headers={"x-ms-blob-type": "BlockBlob"})
+
+# 3. Finalize Batch
+requests.post(f"{BASE_URL}/v1/batches/{batch_id}/finalize")
+
+# 4. Poll Status
+while True:
+    status = requests.get(f"{BASE_URL}/v1/batches/{batch_id}").json()
+    if status.get("status") == "succeeded":
+        print("Done!", status)
+        break
+    time.sleep(5)
+```
+
+#### Curl
+```bash
+# 1. Create Batch
+curl -X POST https://<ocr-app-name>.azurewebsites.net/v1/batches -d '{"sas_ttl_minutes": 60}'
+
+# 2. Upload (Use SAS URL from step 1)
+curl -X PUT -T my_document.pdf -H "x-ms-blob-type: BlockBlob" "<SAS_URL>"
+
+# 3. Finalize
+curl -X POST https://<ocr-app-name>.azurewebsites.net/v1/batches/<BATCH_ID>/finalize
+
+# 4. Get Status
+curl https://<ocr-app-name>.azurewebsites.net/v1/batches/<BATCH_ID>
+```
+
 ---
 
 ## 🧪 Testing
