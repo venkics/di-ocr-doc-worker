@@ -1075,39 +1075,5 @@ def process_message(conn, bs: BlobServiceClient, body: dict) -> bool:
 # -------------------------
 # SB loop
 # -------------------------
-def main():
-    log(f"Worker starting; queue={QUEUE_NAME}; prefetch={SB_PREFETCH}")
-    bs = BlobServiceClient(
-        account_url=f"https://{STG_ACCOUNT}.blob.core.windows.net",
-        credential=STG_KEY,
-    )
-    with psycopg.connect(POSTGRES_URL, autocommit=True, row_factory=dict_row) as conn, \
-         ServiceBusClient.from_connection_string(SB_CONN) as sb:
-        lock_renewer = AutoLockRenewer()
-        receiver = sb.get_queue_receiver(queue_name=QUEUE_NAME, prefetch_count=SB_PREFETCH)
-        with receiver:
-            while True:
-                msgs = receiver.receive_messages(max_message_count=1, max_wait_time=SB_MAX_WAIT_SECONDS)
-                if not msgs:
-                    time.sleep(0.2)
-                    continue
-                msg = msgs[0]
-                lock_renewer.register(receiver, msg, max_lock_renewal_duration=timedelta(seconds=SB_LOCK_RENEW_SECS))
-                try:
-                    body = _decode_sb_message(msg)
-                    log(f"START mid={msg.message_id} doc={body.get('doc_id')} batch={body.get('batch_id')}")
-                    ok = process_message(conn, bs, body)
-                    if ok:
-                        receiver.complete_message(msg)
-                        log(f"DONE  mid={msg.message_id}")
-                    else:
-                        time.sleep(random.uniform(0.2, 0.8))
-                        receiver.abandon_message(msg)
-                        log(f"ABANDON mid={msg.message_id}")
-                except Exception as e:
-                    receiver.abandon_message(msg)
-                    log(f"ERROR mid={getattr(msg,'message_id','?')} {repr(e)}")
-                    traceback.print_exc()
-
-if __name__ == "__main__":
-    main()
+# Removed main() loop and ServiceBusClient logic for Azure Functions migration
+# The process_message function is now called by function_app.py

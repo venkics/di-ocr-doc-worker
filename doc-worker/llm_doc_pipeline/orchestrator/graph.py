@@ -4,7 +4,7 @@
 # Also emits comprehensive triage anchors (urgency, disposition, reasoning, concerns, next steps, numeric, probes),
 # with robust VARIANT matching (UK/US spellings, abbreviations, hyphen/slash variants, common rephrasings).
 
-import os, subprocess, sys, json, glob, pathlib, re, shutil
+import os, subprocess, sys, json, glob, pathlib, re, shutil, tempfile
 from typing import List, Dict, Any
 from datetime import datetime
 
@@ -35,7 +35,10 @@ def RESOLVE_DI_SCRIPT(di_script: str) -> str:
     return di_script
 
 # ===== Output routing helpers =====
-FIXED_OUTPUT_ROOT = "/home/azureuser/llm_demo_org/llm_doc_pipeline/output"
+# ===== Output routing helpers =====
+# ===== Output routing helpers =====
+FIXED_OUTPUT_ROOT = "/tmp/output"
+print(f"DEBUG: FIXED_OUTPUT_ROOT set to: {FIXED_OUTPUT_ROOT}")
 
 def _ensure_dir(p: pathlib.Path) -> pathlib.Path:
     p.mkdir(parents=True, exist_ok=True)
@@ -127,12 +130,25 @@ def ingest_files(state: PipelineState) -> PipelineState:
 def run_di(state: PipelineState) -> PipelineState:
     import tempfile, sys, subprocess, pathlib
     script = _abspath(RESOLVE_DI_SCRIPT(state.di_script))
+    # Prepare environment with current PYTHONPATH
+    # CRITICAL FIX: Azure Functions keeps dependencies in .python_packages which is in sys.path
+    # but NOT necessarily in PYTHONPATH. We must explicitly pass sys.path to the subprocess.
+    env = os.environ.copy()
+    current_sys_path = os.pathsep.join(str(p) for p in sys.path if p)
+    existing_python_path = env.get("PYTHONPATH", "")
+    
+    new_python_path = current_sys_path
+    if existing_python_path:
+        new_python_path = f"{new_python_path}{os.pathsep}{existing_python_path}"
+        
+    env["PYTHONPATH"] = new_python_path
+
     for job in state.jobs:
         in_path = _abspath(job.input_path)
         out_dir = pathlib.Path(tempfile.mkdtemp(prefix=f"di_{pathlib.Path(in_path).stem}_"))
         completed = subprocess.run(
             [sys.executable, script, "--input", in_path, "--out_dir", str(out_dir)],
-            capture_output=True, text=True
+            capture_output=True, text=True, env=env
         )
         if completed.returncode != 0:
             stderr = (completed.stderr or completed.stdout or "")[:2000]

@@ -1,0 +1,9 @@
+.git*
+.vscode
+local.settings.json
+test
+.venv
+__pycache__
+.python_packages
+settings_initial.zip
+Dockerfile
