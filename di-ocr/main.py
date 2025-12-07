@@ -52,6 +52,13 @@ def ensure_schema():
         cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS status     TEXT;""")
         cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now();""")
         cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ;""")
+        cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;""")
+        cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;""")
+        cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS error      TEXT;""")
+        cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS final_json_url TEXT;""")
+        cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS final_graph_xlsx_url TEXT;""")
+        cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS graph_pages_prefix_url TEXT;""")
+        cur.execute("""ALTER TABLE public.documents ADD COLUMN IF NOT EXISTS graph_xlsx_url TEXT;""")
         # defaults / backfill
         cur.execute("""ALTER TABLE public.documents ALTER COLUMN status SET DEFAULT 'queued';""")
         cur.execute("""UPDATE public.documents SET status='queued' WHERE status IS NULL;""")
@@ -218,9 +225,13 @@ def get_batch(batch_id: str, response: Response, mode: Optional[str] = None):
 
 @app.post("/v1/batches/{batch_id}/finalize")
 def finalize(batch_id: str):
+    import sys
+    print(f"FINALIZE batch_id={batch_id} START", file=sys.stderr)
     # 1) find blobs for this batch
     blobs = list_batch_blobs(batch_id)
+    print(f"FINALIZE batch_id={batch_id} found {len(blobs)} blobs: {[b[0] for b in blobs]}", file=sys.stderr)
     if not blobs:
+        print(f"FINALIZE batch_id={batch_id} NO BLOBS FOUND", file=sys.stderr)
         raise HTTPException(status_code=400, detail=f"no files found under {batch_id}/")
 
     # 2) insert document rows (including filename if the column exists) + set batch running
@@ -238,6 +249,8 @@ def finalize(batch_id: str):
             WHERE table_schema='public' AND table_name='documents' AND column_name='filename'
         """)
         has_filename = cur.fetchone()[0] > 0
+        
+        print(f"FINALIZE batch_id={batch_id} inserting docs (has_filename={has_filename})", file=sys.stderr)
 
         for blob_name, blob_url in blobs:
             doc_id = str(uuid.uuid4())
@@ -262,6 +275,16 @@ def finalize(batch_id: str):
         "enqueued_at": dt.datetime.utcnow().isoformat() + "Z",
         "attempt": 0
     } for d in docs]
-    enqueue_docs(msgs)
+    
+    print(f"FINALIZE batch_id={batch_id} enqueuing {len(msgs)} messages", file=sys.stderr)
+    # enqueue_docs(msgs) -> sending list fails? sending one by one
+    sb = ServiceBusClient.from_connection_string(SERVICEBUS_CONNECTION, logging_enable=False)
+    with sb:
+        sender = sb.get_queue_sender(queue_name=DOC_QUEUE)
+        with sender:
+            for m in msgs:
+                sender.send_messages(ServiceBusMessage(json.dumps(m)))
+    
+    print(f"FINALIZE batch_id={batch_id} DONE", file=sys.stderr)
 
     return {"batch_id": batch_id, "enqueued": len(msgs), "queue": DOC_QUEUE}

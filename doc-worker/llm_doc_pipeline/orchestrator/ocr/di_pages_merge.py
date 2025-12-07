@@ -41,19 +41,21 @@ def _analyze_url(model: str, pages: List[int], use_new_route: bool) -> str:
     route = "documentintelligence" if use_new_route else "formrecognizer"
     return f"{DI_ENDPOINT}/{route}/documentModels/{model}:analyze?api-version={API_VER}&pages={pages_q}"
 
-def _post_analyze_single_page(pdf_bytes: bytes, page: int) -> Dict[str, Any]:
-    headers = {"Ocp-Apim-Subscription-Key": DI_KEY, "Content-Type": "application/pdf"}
+import mimetypes
+
+def _post_analyze_single_page(file_bytes: bytes, page: int, mime_type: str = "application/pdf") -> Dict[str, Any]:
+    headers = {"Ocp-Apim-Subscription-Key": DI_KEY, "Content-Type": mime_type}
     last_txt = ""
     for use_new in (False, True):
         url = _analyze_url("prebuilt-layout", [page], use_new)
-        r = requests.post(url, headers=headers, data=pdf_bytes, timeout=120)
+        r = requests.post(url, headers=headers, data=file_bytes, timeout=120)
         if r.status_code in (400, 404) and "documentModels" in r.text:
             last_txt = r.text
             continue
         if r.status_code == 429:
             ra = r.headers.get("Retry-After") or r.headers.get("retry-after")
             time.sleep(float(ra) if ra else 2.0)
-            r = requests.post(url, headers=headers, data=pdf_bytes, timeout=120)
+            r = requests.post(url, headers=headers, data=file_bytes, timeout=120)
         r.raise_for_status()
 
         op = r.headers.get("operation-location") or r.headers.get("Operation-Location")
@@ -83,8 +85,28 @@ def _save_json(path: Path, obj: Any) -> None:
 
 # ---------- Pipeline (pages) ----------
 def run_pipelined(pdf_path: Path, out_dir: Path) -> List[int]:
-    pdf_bytes = pdf_path.read_bytes()
-    total_pages = len(PdfReader(str(pdf_path)).pages)
+    file_bytes = pdf_path.read_bytes()
+    
+    # Detect mime type
+    mime_type, _ = mimetypes.guess_type(pdf_path)
+    if not mime_type:
+        # Fallback based on extension
+        ext = pdf_path.suffix.lower()
+        if ext in (".jpg", ".jpeg"): mime_type = "image/jpeg"
+        elif ext == ".png": mime_type = "image/png"
+        elif ext == ".tiff": mime_type = "image/tiff"
+        elif ext == ".bmp": mime_type = "image/bmp"
+        else: mime_type = "application/pdf"
+
+    if mime_type == "application/pdf":
+        try:
+            total_pages = len(PdfReader(str(pdf_path)).pages)
+        except Exception:
+            print(f"WARNING: pypdf failed on {pdf_path}, assuming 1 page", file=sys.stderr)
+            total_pages = 1
+    else:
+        total_pages = 1
+
     order = list(range(1, total_pages + 1))
     if FIRST_PAGE_BURST > 0 and total_pages > 1:
         order = order[:FIRST_PAGE_BURST] + order[FIRST_PAGE_BURST:]
@@ -102,7 +124,7 @@ def run_pipelined(pdf_path: Path, out_dir: Path) -> List[int]:
     def producer():
         try:
             with ThreadPoolExecutor(max_workers=max(1, DI_MAX_INFLIGHT)) as ex:
-                futs = {ex.submit(_post_analyze_single_page, pdf_bytes, pn): pn for pn in order}
+                futs = {ex.submit(_post_analyze_single_page, file_bytes, pn, mime_type): pn for pn in order}
                 for fut in as_completed(futs):
                     pn = futs[fut]
                     data = fut.result()

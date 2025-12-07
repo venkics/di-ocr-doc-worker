@@ -7,7 +7,7 @@ API_VER = "2023-07-31"  # legacy route that works on East US via /formrecognizer
 def require_env() -> tuple[str, str]:
     endpoint = (os.getenv("DI_ENDPOINT") or "").rstrip("/")
     key = os.getenv("DI_KEY") or ""
-    if not endpoint.startswith("https://") or "cognitiveservices.azure.com" not in endpoint:
+    if not endpoint.startswith("https://") or ("cognitiveservices.azure.com" not in endpoint and "api.cognitive.microsoft.com" not in endpoint):
         raise SystemExit(f"Bad DI_ENDPOINT: {endpoint!r}")
     if not key:
         raise SystemExit("DI_KEY missing")

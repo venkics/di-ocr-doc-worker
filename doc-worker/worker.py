@@ -905,7 +905,7 @@ def _build_batch_reports_if_ready(bs: BlobServiceClient, batch_id: Optional[str]
             log(f"[batch:{batch_id}] EXECUTING UPDATE statement...")
             cur.execute("""
                 UPDATE batches 
-                SET status = 'succeeded'
+                SET status = 'succeeded', finished_at = now()
                 WHERE batch_id = %s
             """, (batch_id,))
             affected_rows = cur.rowcount
@@ -1081,21 +1081,32 @@ def main():
         account_url=f"https://{STG_ACCOUNT}.blob.core.windows.net",
         credential=STG_KEY,
     )
-    with psycopg.connect(POSTGRES_URL, autocommit=True, row_factory=dict_row) as conn, \
-         ServiceBusClient.from_connection_string(SB_CONN) as sb:
+    # Create a thread pool for parallel processing
+    # We use max_workers=SB_PREFETCH (or a separate env var if desired)
+    # to ensure we can process as many messages as we prefetch.
+    import concurrent.futures
+    
+    # We'll use a semaphore or just rely on the thread pool size to limit concurrency.
+    # The receiver should pull messages and submit them to the pool.
+    
+    with ServiceBusClient.from_connection_string(SB_CONN) as sb, \
+         concurrent.futures.ThreadPoolExecutor(max_workers=int(os.environ.get("SB_PREFETCH", "1"))) as executor:
+        
         lock_renewer = AutoLockRenewer()
+        # We increase max_message_count to pull multiple messages if available
         receiver = sb.get_queue_receiver(queue_name=QUEUE_NAME, prefetch_count=SB_PREFETCH)
-        with receiver:
-            while True:
-                msgs = receiver.receive_messages(max_message_count=1, max_wait_time=SB_MAX_WAIT_SECONDS)
-                if not msgs:
-                    time.sleep(0.2)
-                    continue
-                msg = msgs[0]
-                lock_renewer.register(receiver, msg, max_lock_renewal_duration=timedelta(seconds=SB_LOCK_RENEW_SECS))
-                try:
+        
+        def process_msg_wrapper(msg):
+            # This function runs in a separate thread
+            # Create a dedicated DB connection for this thread/task
+            try:
+                with psycopg.connect(POSTGRES_URL, autocommit=True, row_factory=dict_row) as conn:
+                    # Register lock renewal for this message
+                    lock_renewer.register(receiver, msg, max_lock_renewal_duration=timedelta(seconds=SB_LOCK_RENEW_SECS))
+                    
                     body = _decode_sb_message(msg)
                     log(f"START mid={msg.message_id} doc={body.get('doc_id')} batch={body.get('batch_id')}")
+                    
                     ok = process_message(conn, bs, body)
                     if ok:
                         receiver.complete_message(msg)
@@ -1104,10 +1115,24 @@ def main():
                         time.sleep(random.uniform(0.2, 0.8))
                         receiver.abandon_message(msg)
                         log(f"ABANDON mid={msg.message_id}")
-                except Exception as e:
-                    receiver.abandon_message(msg)
-                    log(f"ERROR mid={getattr(msg,'message_id','?')} {repr(e)}")
-                    traceback.print_exc()
+            except Exception as e:
+                receiver.abandon_message(msg)
+                log(f"ERROR mid={getattr(msg,'message_id','?')} {repr(e)}")
+                traceback.print_exc()
+            finally:
+                pass
+
+        with receiver:
+            log(f"Worker loop started with max_workers={SB_PREFETCH}")
+            while True:
+                # Receive up to SB_PREFETCH messages
+                msgs = receiver.receive_messages(max_message_count=1, max_wait_time=SB_MAX_WAIT_SECONDS)
+                if not msgs:
+                    # No messages, just loop
+                    continue
+                
+                for msg in msgs:
+                    executor.submit(process_msg_wrapper, msg)
 
 if __name__ == "__main__":
     main()

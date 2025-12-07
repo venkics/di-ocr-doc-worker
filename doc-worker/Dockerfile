@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy files from current directory (building from within doc-worker)
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --default-timeout=1000 --no-cache-dir -r /app/requirements.txt
 
 COPY worker.py /app/worker.py
 COPY llm_doc_pipeline /app/llm_doc_pipeline
